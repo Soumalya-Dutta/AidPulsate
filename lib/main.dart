@@ -14,7 +14,7 @@ import 'services/connectivity_service.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Portrait-only — SOS apps should not rotate unexpectedly.
+  // Portrait-only
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
@@ -42,14 +42,16 @@ Future<void> main() async {
     return;
   }
 
-  await ConnectivityService.instance.init();
-  await LocationService.instance.init();
+  // Initialize connectivity asynchronously
+  unawaited(ConnectivityService.instance.init());
 
   runApp(const AidPulsateApp());
 }
 
+void unawaited(Future<void> future) {}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// Error screens (shown before the widget tree is ready)
+// Error screens (shown only if Supabase SDK fails to initialize)
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _MissingEnvApp extends StatelessWidget {
@@ -72,17 +74,11 @@ class _MissingEnvApp extends StatelessWidget {
                 Text(
                   'Missing Supabase credentials',
                   textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                  ),
+                  style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold),
                 ),
                 SizedBox(height: 16),
                 Text(
-                  'Run the app with:\n\n'
-                  'flutter run --dart-define-from-file=.env\n\n'
-                  'Copy .env.example → .env and fill in your credentials.',
+                  'Run the app with:\n\nflutter run --dart-define-from-file=.env',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.white70, fontSize: 14, height: 1.6),
                 ),
@@ -114,36 +110,15 @@ class _InitErrorApp extends StatelessWidget {
                 const Icon(Icons.cloud_off, color: Colors.white, size: 64),
                 const SizedBox(height: 24),
                 const Text(
-                  'Failed to connect to Supabase',
+                  'Supabase Init Failed',
                   textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                  ),
+                  style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 16),
-                const Text(
-                  'Check that SUPABASE_URL is the bare project URL '
-                  '(no /rest/v1/ suffix) and that SUPABASE_ANON_KEY is correct.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.white70, fontSize: 14, height: 1.6),
-                ),
-                const SizedBox(height: 24),
                 Container(
                   padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.black26,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    error,
-                    style: const TextStyle(
-                      color: Colors.white60,
-                      fontSize: 12,
-                      fontFamily: 'monospace',
-                    ),
-                  ),
+                  decoration: BoxDecoration(color: Colors.black26, borderRadius: BorderRadius.circular(8)),
+                  child: Text(error, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white60, fontSize: 12, fontFamily: 'monospace')),
                 ),
               ],
             ),
@@ -176,20 +151,22 @@ class _AidPulsateAppState extends State<AidPulsateApp> {
     _resolveStartup();
   }
 
-  /// Restores any existing session and fetches the admin role before
-  /// showing the first screen, so there is no role flash on launch.
   Future<void> _resolveStartup() async {
     try {
+      // 1. Initialise Location
+      await LocationService.instance.init().timeout(const Duration(seconds: 3), onTimeout: () => false);
+
+      // 2. Background Connection Check (Diagnostic only, not blocking)
+      SupabaseService.instance.testConnection();
+
+      // 3. Resolve Session
       final session = SupabaseService.instance.auth.currentSession;
       if (session != null) {
-        await SupabaseService.instance.fetchIsAdmin().timeout(
-          const Duration(seconds: 3),
-          onTimeout: () {},
-        );
+        await SupabaseService.instance.fetchIsAdmin().timeout(const Duration(seconds: 3), onTimeout: () {});
         _hasSession = true;
       }
-    } catch (_) {
-      _hasSession = false;
+    } catch (e) {
+      debugPrint('Startup warning: $e');
     } finally {
       if (mounted) setState(() => _ready = true);
     }
@@ -202,21 +179,12 @@ class _AidPulsateAppState extends State<AidPulsateApp> {
       debugShowCheckedModeBanner: false,
       theme: buildAppTheme(),
       navigatorKey: _navigatorKey,
-      // _SplashGate is the home widget — it shows a spinner then replaces
-      // itself with LoginScreen or HomeScreen once the session check is done.
       home: _SplashGate(ready: _ready, hasSession: _hasSession),
-      // Explicit routes table: /login, /signup, /home.
-      // MaterialApp.home: serves the splash gate on the initial '/' slot.
-      // Named /home ≠ '/' so there is no route-conflict on iOS.
       routes: AppRouter.staticRoutes,
       onGenerateRoute: AppRouter.onGenerateRoute,
     );
   }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Splash gate — spinner until session resolved, then navigates to first screen
-// ─────────────────────────────────────────────────────────────────────────────
 
 class _SplashGate extends StatelessWidget {
   const _SplashGate({required this.ready, required this.hasSession});
@@ -226,16 +194,11 @@ class _SplashGate extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (!ready) {
-      return Scaffold(
+      return const Scaffold(
         backgroundColor: kColorBackground,
-        body: const Center(
-          child: CircularProgressIndicator(color: kColorSOS),
-        ),
+        body: Center(child: CircularProgressIndicator(color: kColorSOS)),
       );
     }
-    // Return the real first screen directly — no named-route push needed.
-    // All subsequent navigation uses Navigator.pushNamed / pushReplacementNamed
-    // which go through AppRouter.onGenerateRoute.
     return hasSession ? const HomeScreen() : const LoginScreen();
   }
 }

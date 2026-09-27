@@ -13,6 +13,12 @@ const kColorBorder = Color(0xFFE0E0E0);
 const kColorTextPrimary = Color(0xFF121212);
 const kColorTextSecondary = Color(0xFF5F6368);
 
+// ── Admin palette (Dark Mode) ──────────────────────────────────────────────
+const kColorAdminBackground = Color(0xFF121212);
+const kColorAdminSurface = Color(0xFF1E1E1E);
+const kColorAdminBorder = Color(0xFF2C2C2C);
+const kColorAcknowledged = Color(0xFFF57C00);
+
 // ── App theme ───────────────────────────────────────────────────────────────
 ThemeData buildAppTheme() {
   return ThemeData(
@@ -59,9 +65,6 @@ ThemeData buildAppTheme() {
 }
 
 // ── Named routes ────────────────────────────────────────────────────────────
-// Thin wrapper that delegates to AppRouter so all existing screens that
-// import constants.dart continue to compile with zero changes.
-// New code should use AppRouter directly.
 class AppRoutes {
   static const login             = AppRouter.login;
   static const signup            = AppRouter.signup;

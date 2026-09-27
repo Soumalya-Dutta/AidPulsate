@@ -1,34 +1,12 @@
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
 import '../constants.dart';
 import '../services/supabase_service.dart';
 
-/// Simulated SOS event model – replace with Supabase realtime data.
-class _SOSEvent {
-  _SOSEvent({
-    required this.id,
-    required this.victimName,
-    required this.lat,
-    required this.lng,
-    required this.timestamp,
-    required this.isOnline,
-  });
-
-  final String id;
-  final String victimName;
-  final double lat;
-  final double lng;
-  final DateTime timestamp;
-  final bool isOnline;
-  bool isResolved = false;
-}
-
 /// Admin dashboard: real-time alert list with status chips.
-/// In production this subscribes to a Supabase Realtime channel
-/// on the `sos_events` table.
+/// Subscribes live to the Supabase Realtime channel on the `sos_events` table.
 class AdminDashboard extends StatefulWidget {
   const AdminDashboard({super.key});
 
@@ -37,134 +15,137 @@ class AdminDashboard extends StatefulWidget {
 }
 
 class _AdminDashboardState extends State<AdminDashboard> {
-  final List<_SOSEvent> _events = [];
-  Timer? _simulationTimer;
-  int _newAlertCount = 0;
-
-  static final _names = [
-    'Maria G.',
-    'Aisha T.',
-    'Lin W.',
-    'Priya K.',
-    'Fatima H.',
-    'Sofia R.',
-    'Amara D.',
-  ];
+  late Stream<List<Map<String, dynamic>>> _sosStream;
+  int _refreshKey = 0;
 
   @override
   void initState() {
     super.initState();
-    _addSimulatedEvent(); // First event on load.
-    // Simulate a new incoming event every 20 seconds.
-    _simulationTimer = Timer.periodic(const Duration(seconds: 20), (_) {
-      if (!mounted) return;
-      _addSimulatedEvent();
-    });
+    _initStream();
   }
 
-  void _addSimulatedEvent() {
-    final rng = math.Random();
-    final event = _SOSEvent(
-      id: 'AP-${(rng.nextInt(90000) + 10000)}-X',
-      victimName: _names[rng.nextInt(_names.length)],
-      lat: 40.7128 + (rng.nextDouble() - 0.5) * 0.1,
-      lng: -74.0060 + (rng.nextDouble() - 0.5) * 0.1,
-      timestamp: DateTime.now(),
-      isOnline: rng.nextBool(),
-    );
+  void _initStream() {
+    _sosStream = SupabaseService.instance.client
+        .from('sos_events')
+        .stream(primaryKey: ['id'])
+        .order('started_at', ascending: false);
+  }
+
+  void _handleRefresh() {
     setState(() {
-      _events.insert(0, event);
-      _newAlertCount++;
-    });
-    // Auto-dismiss new-alert badge after 4 s.
-    Future.delayed(const Duration(seconds: 4), () {
-      if (!mounted) return;
-      setState(() => _newAlertCount = 0);
+      _refreshKey++;
+      _initStream();
     });
   }
 
-  void _resolveEvent(String id) {
-    setState(() {
-      final idx = _events.indexWhere((e) => e.id == id);
-      if (idx != -1) _events[idx].isResolved = true;
-    });
-  }
-
-  @override
-  void dispose() {
-    _simulationTimer?.cancel();
-    super.dispose();
+  Future<void> _resolveEvent(String id) async {
+    try {
+      await SupabaseService.instance.client
+          .from('sos_events')
+          .update({
+            'status': 'resolved',
+            'resolved_at': DateTime.now().toIso8601String(),
+          })
+          .eq('id', id);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to resolve: $e')),
+        );
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
-    final active = _events.where((e) => !e.isResolved).toList();
-    final resolved = _events.where((e) => e.isResolved).toList();
 
     return Scaffold(
       backgroundColor: kColorBackground,
-      body: CustomScrollView(
-        slivers: [
-          _buildAppBar(context, textTheme),
-          _buildStatsRow(active.length, resolved.length),
-          if (active.isNotEmpty) ...[
-            _buildSectionHeader(textTheme, 'Active Alerts', kColorSOS,
-                badge: active.length),
-            SliverList(
-              delegate: SliverChildBuilderDelegate(
-                (_, i) => _AlertTile(
-                  event: active[i],
-                  onTap: () => Navigator.pushNamed(
-                    context,
-                    AppRoutes.adminVictimDetail,
-                    arguments: {
-                      'eventId': active[i].id,
-                      'victimName': active[i].victimName,
-                    },
+      body: StreamBuilder<List<Map<String, dynamic>>>(
+        key: ValueKey(_refreshKey),
+        stream: _sosStream,
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text('Error: ${snapshot.error}', textAlign: TextAlign.center),
                   ),
-                  onResolve: () => _resolveEvent(active[i].id),
-                ),
-                childCount: active.length,
+                  ElevatedButton(onPressed: _handleRefresh, child: const Text('Retry')),
+                ],
               ),
-            ),
-          ],
-          if (resolved.isNotEmpty) ...[
-            _buildSectionHeader(textTheme, 'Resolved', kColorSafe),
-            SliverList(
-              delegate: SliverChildBuilderDelegate(
-                (_, i) => _AlertTile(
-                  event: resolved[i],
-                  onTap: () => Navigator.pushNamed(
-                    context,
-                    AppRoutes.adminVictimDetail,
-                    arguments: {
-                      'eventId': resolved[i].id,
-                      'victimName': resolved[i].victimName,
-                    },
+            );
+          }
+
+          if (!snapshot.hasData) {
+            return const Center(child: CircularProgressIndicator(color: kColorSOS));
+          }
+
+          final events = snapshot.data!;
+          final active = events.where((e) => e['status'] == 'active').toList();
+          final resolved = events.where((e) => e['status'] == 'resolved').toList();
+
+          return CustomScrollView(
+            slivers: [
+              _buildAppBar(context, textTheme),
+              _buildStatsRow(active.length, resolved.length),
+              
+              if (active.isEmpty && resolved.isEmpty)
+                const SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: Center(child: Text('No events found', style: TextStyle(color: kColorTextSecondary))),
+                ),
+
+              if (active.isNotEmpty) ...[
+                _buildSectionHeader(textTheme, 'Active Alerts', kColorSOS, badge: active.length),
+                SliverList(
+                  delegate: SliverChildBuilderDelegate(
+                    (_, i) => _AlertTile(
+                      eventData: active[i],
+                      onTap: () => Navigator.pushNamed(
+                        context,
+                        AppRoutes.adminVictimDetail,
+                        arguments: {
+                          'eventId': active[i]['id'],
+                          'victimName': (active[i]['ref_id'] as String?) ?? 'Anonymous',
+                        },
+                      ),
+                      onResolve: () => _resolveEvent(active[i]['id']),
+                    ),
+                    childCount: active.length,
                   ),
-                  onResolve: null,
                 ),
-                childCount: resolved.length,
-              ),
-            ),
-          ],
-          const SliverToBoxAdapter(child: SizedBox(height: 32)),
-        ],
+              ],
+              
+              if (resolved.isNotEmpty) ...[
+                _buildSectionHeader(textTheme, 'Resolved', kColorSafe),
+                SliverList(
+                  delegate: SliverChildBuilderDelegate(
+                    (_, i) => _AlertTile(
+                      eventData: resolved[i],
+                      onTap: () => Navigator.pushNamed(
+                        context,
+                        AppRoutes.adminVictimDetail,
+                        arguments: {
+                          'eventId': resolved[i]['id'],
+                          'victimName': (resolved[i]['ref_id'] as String?) ?? 'Anonymous',
+                        },
+                      ),
+                      onResolve: null,
+                    ),
+                    childCount: resolved.length,
+                  ),
+                ),
+              ],
+              const SliverToBoxAdapter(child: SizedBox(height: 32)),
+            ],
+          );
+        },
       ),
-      // Floating "new alert" badge.
-      floatingActionButton: _newAlertCount > 0
-          ? FloatingActionButton.extended(
-              onPressed: null,
-              backgroundColor: kColorSOS,
-              icon: const Icon(Icons.notifications_active, color: Colors.white),
-              label: Text(
-                '$_newAlertCount New Alert${_newAlertCount > 1 ? 's' : ''}',
-                style: const TextStyle(
-                    color: Colors.white, fontWeight: FontWeight.bold),
-              ),
-            )
-          : null,
     );
   }
 
@@ -174,40 +155,27 @@ class _AdminDashboardState extends State<AdminDashboard> {
       backgroundColor: kColorBackground,
       elevation: 0,
       pinned: true,
+      titleSpacing: 0,
       leading: canPop
-          ? IconButton(
-              icon: const Icon(Icons.arrow_back),
-              onPressed: () => Navigator.pop(context),
-            )
-          : null,
-      title: Row(
-        children: [
-          Container(
-            width: 8,
-            height: 8,
-            decoration: const BoxDecoration(
-              color: kColorSOS,
-              shape: BoxShape.circle,
+          ? IconButton(icon: const Icon(Icons.arrow_back), onPressed: () => Navigator.pop(context))
+          : const Center(
+              child: Icon(Icons.circle, color: kColorSOS, size: 10),
             ),
-          ),
-          const SizedBox(width: 8),
-          Text(
-            'AidPulsate Admin',
-            style: textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
-          ),
-        ],
+      title: Text(
+        'Admin Panel',
+        style: textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
       ),
       actions: [
+        IconButton(tooltip: 'Refresh', icon: const Icon(Icons.refresh), onPressed: _handleRefresh),
         IconButton(
-          tooltip: 'Victim / SOS Mode',
+          tooltip: 'SOS Mode',
           icon: const Icon(Icons.sos_outlined),
           color: kColorSOS,
           onPressed: () => Navigator.pushNamed(context, AppRoutes.home),
         ),
         IconButton(
-          tooltip: 'Sign Out',
+          tooltip: 'Logout',
           icon: const Icon(Icons.logout),
-          color: kColorTextSecondary,
           onPressed: () => _onSignOut(context),
         ),
       ],
@@ -223,19 +191,13 @@ class _AdminDashboardState extends State<AdminDashboard> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Sign Out'),
-        content: const Text('Are you sure you want to sign out?'),
+        content: const Text('Are you sure?'),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: kColorSOS,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Sign Out'),
+            style: ElevatedButton.styleFrom(backgroundColor: kColorSOS, foregroundColor: Colors.white),
+            child: const Text('Logout'),
           ),
         ],
       ),
@@ -243,11 +205,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     if (confirmed == true && context.mounted) {
       await SupabaseService.instance.signOut();
       if (context.mounted) {
-        Navigator.pushNamedAndRemoveUntil(
-          context,
-          AppRoutes.login,
-          (_) => false,
-        );
+        Navigator.pushNamedAndRemoveUntil(context, AppRoutes.login, (_) => false);
       }
     }
   }
@@ -258,64 +216,37 @@ class _AdminDashboardState extends State<AdminDashboard> {
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
         child: Row(
           children: [
-            _StatChip(
-              label: 'Active',
-              value: '$active',
-              color: kColorSOS,
-              icon: Icons.sos,
-            ),
-            const SizedBox(width: 12),
-            _StatChip(
-              label: 'Resolved',
-              value: '$resolved',
-              color: kColorSafe,
-              icon: Icons.check_circle_outline,
-            ),
-            const SizedBox(width: 12),
-            _StatChip(
-              label: 'Total',
-              value: '${active + resolved}',
-              color: kColorInfo,
-              icon: Icons.list_alt_outlined,
-            ),
+            _StatChip(label: 'Active', value: '$active', color: kColorSOS, icon: Icons.sos),
+            const SizedBox(width: 8),
+            _StatChip(label: 'Done', value: '$resolved', color: kColorSafe, icon: Icons.check_circle),
+            const SizedBox(width: 8),
+            _StatChip(label: 'Total', value: '${active + resolved}', color: kColorInfo, icon: Icons.list),
           ],
         ),
       ),
     );
   }
 
-  SliverToBoxAdapter _buildSectionHeader(
-      TextTheme textTheme, String title, Color color,
-      {int? badge}) {
+  SliverToBoxAdapter _buildSectionHeader(TextTheme textTheme, String title, Color color, {int? badge}) {
     return SliverToBoxAdapter(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
         child: Row(
           children: [
-            Text(
-              title,
-              style: textTheme.titleLarge?.copyWith(
-                color: color,
-                fontWeight: FontWeight.bold,
+            Expanded(
+              child: Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: textTheme.titleLarge?.copyWith(color: color, fontWeight: FontWeight.bold),
               ),
             ),
             if (badge != null) ...[
               const SizedBox(width: 8),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                decoration: BoxDecoration(
-                  color: color,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  '$badge',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(12)),
+                child: Text('$badge', style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
               ),
             ],
           ],
@@ -325,29 +256,30 @@ class _AdminDashboardState extends State<AdminDashboard> {
   }
 }
 
-// ── Alert tile ─────────────────────────────────────────────────────────────
 class _AlertTile extends StatelessWidget {
-  const _AlertTile({
-    required this.event,
-    required this.onTap,
-    required this.onResolve,
-  });
-
-  final _SOSEvent event;
+  const _AlertTile({required this.eventData, required this.onTap, required this.onResolve});
+  final Map<String, dynamic> eventData;
   final VoidCallback onTap;
   final VoidCallback? onResolve;
 
-  String _timeAgo(DateTime dt) {
-    final diff = DateTime.now().difference(dt);
-    if (diff.inSeconds < 60) return '${diff.inSeconds}s ago';
-    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
-    return '${diff.inHours}h ago';
+  String _timeAgo(String? timestampStr) {
+    if (timestampStr == null) return 'unknown';
+    try {
+      final dt = DateTime.parse(timestampStr);
+      final diff = DateTime.now().difference(dt);
+      if (diff.inSeconds < 60) return 'just now';
+      if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+      return '${diff.inHours}h ago';
+    } catch (_) { return 'now'; }
   }
 
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
-    final isResolved = event.isResolved;
+    final status = eventData['status'] as String? ?? 'active';
+    final isResolved = status == 'resolved';
+    final isOnline = (eventData['transmission'] as String? ?? 'online') == 'online';
+    final refId = (eventData['ref_id'] as String?) ?? (eventData['id'] as String? ?? 'SOS');
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -355,102 +287,41 @@ class _AlertTile extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(12),
         child: Container(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: isResolved
-                ? kColorSurface
-                : kColorSOS.withValues(alpha: 0.04),
+            color: isResolved ? kColorSurface : kColorSOS.withOpacity(0.04),
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: isResolved ? kColorBorder : kColorSOS.withValues(alpha: 0.3),
-            ),
+            border: Border.all(color: isResolved ? kColorBorder : kColorSOS.withOpacity(0.2)),
           ),
           child: Row(
             children: [
-              // Avatar / status indicator.
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: isResolved
-                      ? kColorSafe.withValues(alpha: 0.12)
-                      : kColorSOS.withValues(alpha: 0.12),
-                ),
-                child: Icon(
-                  isResolved ? Icons.check_rounded : Icons.sos,
-                  color: isResolved ? kColorSafe : kColorSOS,
-                  size: 22,
-                ),
-              ),
-              const SizedBox(width: 14),
-              // Main info.
+              Icon(isResolved ? Icons.check_circle : Icons.sos, color: isResolved ? kColorSafe : kColorSOS, size: 24),
+              const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Row(
                       children: [
-                        Text(
-                          event.victimName,
-                          style: textTheme.bodyLarge?.copyWith(
-                            fontWeight: FontWeight.bold,
+                        Flexible(
+                          child: Text(
+                            refId.toUpperCase(),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.bold),
                           ),
                         ),
                         const SizedBox(width: 8),
-                        // Online / offline chip.
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: event.isOnline
-                                ? kColorInfo.withValues(alpha: 0.1)
-                                : kColorWarning.withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            event.isOnline ? 'Online' : 'SMS',
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                              color:
-                                  event.isOnline ? kColorInfo : kColorWarning,
-                            ),
-                          ),
-                        ),
+                        _TransportBadge(isOnline: isOnline),
                       ],
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '${event.id}  ·  ${_timeAgo(event.timestamp)}',
-                      style: textTheme.labelSmall,
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '${event.lat.toStringAsFixed(4)}, ${event.lng.toStringAsFixed(4)}',
-                      style: textTheme.labelSmall?.copyWith(color: kColorInfo),
-                    ),
+                    Text(_timeAgo(eventData['started_at']), style: textTheme.labelSmall),
                   ],
                 ),
               ),
-              // Actions.
-              Column(
-                children: [
-                  IconButton(
-                    tooltip: 'View Details',
-                    icon: const Icon(Icons.chevron_right),
-                    color: kColorTextSecondary,
-                    onPressed: onTap,
-                  ),
-                  if (onResolve != null)
-                    IconButton(
-                      tooltip: 'Mark Resolved',
-                      icon: const Icon(Icons.check_circle_outline),
-                      color: kColorSafe,
-                      onPressed: onResolve,
-                    ),
-                ],
-              ),
+              if (onResolve != null)
+                IconButton(icon: const Icon(Icons.check_circle_outline, color: kColorSafe), onPressed: onResolve),
+              const Icon(Icons.chevron_right, color: kColorTextSecondary, size: 20),
             ],
           ),
         ),
@@ -459,15 +330,28 @@ class _AlertTile extends StatelessWidget {
   }
 }
 
-// ── Stat chip ──────────────────────────────────────────────────────────────
-class _StatChip extends StatelessWidget {
-  const _StatChip({
-    required this.label,
-    required this.value,
-    required this.color,
-    required this.icon,
-  });
+class _TransportBadge extends StatelessWidget {
+  const _TransportBadge({required this.isOnline});
+  final bool isOnline;
 
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: (isOnline ? kColorInfo : kColorWarning).withOpacity(0.1),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        isOnline ? 'Online' : 'SMS',
+        style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: isOnline ? kColorInfo : kColorWarning),
+      ),
+    );
+  }
+}
+
+class _StatChip extends StatelessWidget {
+  const _StatChip({required this.label, required this.value, required this.color, required this.icon});
   final String label;
   final String value;
   final Color color;
@@ -477,35 +361,26 @@ class _StatChip extends StatelessWidget {
   Widget build(BuildContext context) {
     return Expanded(
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
         decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.08),
+          color: color.withOpacity(0.08),
           borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: color.withValues(alpha: 0.25)),
+          border: Border.all(color: color.withOpacity(0.2)),
         ),
         child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 18, color: color),
-            const SizedBox(width: 8),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  value,
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: color,
-                  ),
-                ),
-                Text(
-                  label,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: kColorTextSecondary,
-                  ),
-                ),
-              ],
+            Icon(icon, size: 14, color: color),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(value, maxLines: 1, style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: color)),
+                  Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 9, color: kColorTextSecondary)),
+                ],
+              ),
             ),
           ],
         ),

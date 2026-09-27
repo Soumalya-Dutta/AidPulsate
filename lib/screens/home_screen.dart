@@ -85,7 +85,6 @@ class _HomeScreenState extends State<HomeScreen> {
             _buildTopBar(context, textTheme),
             _buildConnectivityRow(context),
             const Spacer(),
-            // ── The new EmergencyButton widget ─────────────────────────────
             const EmergencyButton(size: 200),
             const Spacer(),
             _buildFooter(textTheme),
@@ -96,14 +95,12 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ── Top bar ────────────────────────────────────────────────────────────────
   Widget _buildTopBar(BuildContext context, TextTheme textTheme) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // Logo / brand
           Row(
             children: [
               Container(
@@ -124,18 +121,26 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ],
           ),
-          // Action icons
           Row(
             children: [
               IconButton(
                 tooltip: 'Admin Dashboard',
-                icon: Icon(
-                  Icons.admin_panel_settings_outlined,
-                  color: SupabaseService.instance.isAdmin ? kColorSOS : kColorTextSecondary,
-                ),
-                onPressed: () {
-                  SupabaseService.instance.fetchIsAdmin();
-                  Navigator.pushNamed(context, AppRoutes.adminDashboard);
+                icon: const Icon(Icons.admin_panel_settings_outlined),
+                color: SupabaseService.instance.isAdmin ? kColorSOS : kColorTextSecondary,
+                onPressed: () async {
+                  // 🛠️ FIX: Wait for the admin check to complete before navigating
+                  showDialog(
+                    context: context,
+                    barrierDismissible: false,
+                    builder: (context) => const Center(child: CircularProgressIndicator(color: kColorSOS)),
+                  );
+                  
+                  await SupabaseService.instance.fetchIsAdmin();
+                  
+                  if (context.mounted) {
+                    Navigator.pop(context); // Remove loader
+                    Navigator.pushNamed(context, AppRoutes.adminDashboard);
+                  }
                 },
               ),
               IconButton(
@@ -144,7 +149,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 color: kColorTextSecondary,
                 onPressed: () {},
               ),
-              // Sign-out
               IconButton(
                 tooltip: 'Sign Out',
                 icon: const Icon(Icons.logout),
@@ -158,7 +162,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ── Connectivity status chips ──────────────────────────────────────────────
   Widget _buildConnectivityRow(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -180,7 +183,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ── Footer ─────────────────────────────────────────────────────────────────
   Widget _buildFooter(TextTheme textTheme) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 32),
@@ -193,7 +195,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-// ── Reusable status chip ───────────────────────────────────────────────────
 class _StatusChip extends StatelessWidget {
   const _StatusChip({
     required this.dotColor,

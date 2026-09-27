@@ -1,23 +1,15 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../constants.dart';
 
-/// A large, prominent, always-visible Emergency Button.
+/// A high-fidelity, ultra-robust Emergency SOS Button.
 ///
-/// Features:
-/// - Persistent red panic button with a pulsing ring animation.
-/// - Long-press (default 800 ms) triggers the SOS countdown.
-/// - Press-and-hold progress arc shows remaining hold time visually.
-/// - Optional [onActivate] callback; if null, navigates to countdown route.
-/// - Fully accessible via [Semantics].
-///
-/// Usage:
-/// ```dart
-/// EmergencyButton()                    // navigates to AppRoutes.countdown
-/// EmergencyButton(onActivate: myFn)    // custom handler
-/// EmergencyButton(size: 180)           // custom size
-/// ```
+/// Engineered specifically for high-stress emergency response situations:
+/// - Immune to hand tremors and micro-finger slips via a generous 80-pixel displacement threshold.
+/// - Participates actively in the gesture arena to prevent parent scroll views from stealing the focus.
+/// - Delivers responsive tactile haptic feedback on touch activation and successful countdown transitions.
 class EmergencyButton extends StatefulWidget {
   const EmergencyButton({
     super.key,
@@ -29,10 +21,10 @@ class EmergencyButton extends StatefulWidget {
   /// Diameter of the button in logical pixels.
   final double size;
 
-  /// How long the user must hold before [onActivate] fires.
+  /// How long the user must hold before activation fires.
   final Duration holdDuration;
 
-  /// Override the action on activation. Defaults to pushing [AppRoutes.countdown].
+  /// Optional override for activation behavior. Defaults to pushing [AppRoutes.countdown].
   final VoidCallback? onActivate;
 
   @override
@@ -41,21 +33,21 @@ class EmergencyButton extends StatefulWidget {
 
 class _EmergencyButtonState extends State<EmergencyButton>
     with TickerProviderStateMixin {
-  // Outer pulse ring.
+  // Gentle pulse ring animation when idle
   late AnimationController _pulseCtrl;
   late Animation<double> _pulseScale;
   late Animation<double> _pulseOpacity;
 
-  // Progress arc while holding.
+  // Active progress feedback animation while holding
   late AnimationController _holdCtrl;
 
   bool _isHolding = false;
+  Offset? _initialPosition;
 
   @override
   void initState() {
     super.initState();
 
-    // Pulse: slow gentle throb when idle.
     _pulseCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1200),
@@ -68,7 +60,6 @@ class _EmergencyButtonState extends State<EmergencyButton>
       CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut),
     );
 
-    // Hold progress arc.
     _holdCtrl = AnimationController(
       vsync: this,
       duration: widget.holdDuration,
@@ -82,16 +73,38 @@ class _EmergencyButtonState extends State<EmergencyButton>
     }
   }
 
-  void _startHold() {
-    setState(() => _isHolding = true);
+  void _startHold(Offset globalPosition) {
+    if (_isHolding) return;
+    setState(() {
+      _isHolding = true;
+      _initialPosition = globalPosition;
+    });
     _pulseCtrl.stop();
     _holdCtrl.forward(from: 0);
     HapticFeedback.heavyImpact();
   }
 
+  void _checkDisplacement(Offset globalPosition) {
+    if (!_isHolding || _initialPosition == null) return;
+    
+    // Calculate Euclidean distance to filter out minor finger tremors/slides
+    final distance = math.sqrt(
+      math.pow(globalPosition.dx - _initialPosition!.dx, 2) +
+      math.pow(globalPosition.dy - _initialPosition!.dy, 2)
+    );
+
+    // Cancel hold only if finger leaves the safe button vicinity (> 80 logical pixels)
+    if (distance > 80.0) {
+      _cancelHold();
+    }
+  }
+
   void _cancelHold() {
     if (!_isHolding) return;
-    setState(() => _isHolding = false);
+    setState(() {
+      _isHolding = false;
+      _initialPosition = null;
+    });
     _holdCtrl.reset();
     _pulseCtrl.repeat(reverse: true);
     HapticFeedback.lightImpact();
@@ -99,7 +112,10 @@ class _EmergencyButtonState extends State<EmergencyButton>
 
   void _activate() {
     if (!mounted) return;
-    setState(() => _isHolding = false);
+    setState(() {
+      _isHolding = false;
+      _initialPosition = null;
+    });
     _holdCtrl.reset();
     _pulseCtrl.repeat(reverse: true);
     HapticFeedback.heavyImpact();
@@ -123,20 +139,22 @@ class _EmergencyButtonState extends State<EmergencyButton>
     final size = widget.size;
 
     return Semantics(
-      label: 'Emergency SOS button. Hold to activate.',
+      label: 'Emergency SOS button. Press and hold down completely to activate assistance.',
       button: true,
       child: GestureDetector(
-        onTapDown: (_) => _startHold(),
-        onTapUp: (_) => _cancelHold(),
-        onTapCancel: _cancelHold,
-        onLongPressCancel: _cancelHold,
+        // Absorb pan/drag events so parent widgets like ScrollViews cannot steal the touch gesture
+        behavior: HitTestBehavior.opaque,
+        onPanDown: (details) => _startHold(details.globalPosition),
+        onPanUpdate: (details) => _checkDisplacement(details.globalPosition),
+        onPanEnd: (_) => _cancelHold(),
+        onPanCancel: () => _cancelHold(),
         child: SizedBox(
           width: size,
           height: size,
           child: Stack(
             alignment: Alignment.center,
             children: [
-              // Pulse ring (shown when idle).
+              // Outer ambient pulsing ring (visible when idle)
               if (!_isHolding)
                 AnimatedBuilder(
                   animation: _pulseCtrl,
@@ -147,13 +165,13 @@ class _EmergencyButtonState extends State<EmergencyButton>
                       height: size,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        color: kColorSOS.withValues(alpha: _pulseOpacity.value),
+                        color: kColorSOS.withOpacity(_pulseOpacity.value),
                       ),
                     ),
                   ),
                 ),
 
-              // Progress arc (shown while holding).
+              // Solid high-visibility progress bar ring (visible while holding)
               if (_isHolding)
                 AnimatedBuilder(
                   animation: _holdCtrl,
@@ -162,28 +180,24 @@ class _EmergencyButtonState extends State<EmergencyButton>
                     height: size,
                     child: CircularProgressIndicator(
                       value: _holdCtrl.value,
-                      strokeWidth: 5,
-                      backgroundColor: Colors.white24,
-                      valueColor:
-                          const AlwaysStoppedAnimation<Color>(Colors.white),
+                      strokeWidth: 6,
+                      backgroundColor: Colors.black12,
+                      valueColor: const AlwaysStoppedAnimation<Color>(kColorSOS),
                     ),
                   ),
                 ),
 
-              // Core button circle.
+              // Core action trigger surface
               AnimatedContainer(
                 duration: const Duration(milliseconds: 120),
                 width: _isHolding ? size * 0.92 : size * 0.86,
                 height: _isHolding ? size * 0.92 : size * 0.86,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: _isHolding
-                      ? kColorSOS.withValues(alpha: 0.88)
-                      : kColorSOS,
+                  color: _isHolding ? kColorSOS.withOpacity(0.9) : kColorSOS,
                   boxShadow: [
                     BoxShadow(
-                      color: kColorSOS.withValues(
-                          alpha: _isHolding ? 0.55 : 0.35),
+                      color: kColorSOS.withOpacity(_isHolding ? 0.55 : 0.35),
                       blurRadius: _isHolding ? 36 : 24,
                       spreadRadius: _isHolding ? 10 : 4,
                     ),
@@ -195,24 +209,25 @@ class _EmergencyButtonState extends State<EmergencyButton>
                     Icon(
                       Icons.sos,
                       color: Colors.white,
-                      size: size * 0.22,
+                      size: size * 0.24,
                     ),
-                    SizedBox(height: size * 0.03),
+                    const SizedBox(height: 4),
                     Text(
-                      _isHolding ? 'HOLD…' : 'EMERGENCY',
+                      _isHolding ? 'HOLDING…' : 'EMERGENCY',
                       style: TextStyle(
                         color: Colors.white,
-                        fontSize: size * 0.07,
+                        fontSize: size * 0.075,
                         fontWeight: FontWeight.bold,
                         letterSpacing: 1.4,
                       ),
                     ),
-                    SizedBox(height: size * 0.01),
+                    const SizedBox(height: 2),
                     Text(
-                      _isHolding ? 'Release to cancel' : 'Hold to activate',
+                      _isHolding ? 'Keep holding down' : 'Hold to activate',
                       style: TextStyle(
                         color: Colors.white70,
-                        fontSize: size * 0.055,
+                        fontSize: size * 0.05,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
                   ],

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -8,133 +9,141 @@ import 'location_service.dart';
 import 'connectivity_service.dart';
 
 /// Handles the full SOS lifecycle against Supabase.
-///
-///  createEvent()   → inserts into sos_events, starts GPS tracking
-///  resolveEvent()  → updates sos_events.status = 'resolved', stops tracking
-///
-/// Location pings are inserted automatically every [pingInterval] while
-/// the event is active.
 class SOSService {
   SOSService._();
   static final SOSService instance = SOSService._();
 
-  static const pingInterval = Duration(seconds: 10);
-
   SupabaseClient get _db => SupabaseService.instance.client;
-  String? get _userId => SupabaseService.instance.currentUser?.id;
 
-  // Active event state.
   String? _activeEventId;
   String? _activeRefId;
   int _seq = 0;
-  Timer? _pingTimer;
   StreamSubscription<Position>? _locationSub;
+  DateTime? _lastPingTime;
 
   String? get activeEventId => _activeEventId;
   String? get activeRefId   => _activeRefId;
   bool   get hasActiveEvent => _activeEventId != null;
 
-  // ── Create event ───────────────────────────────────────────────────────────
-  /// Inserts a new `sos_events` row and starts sending location pings.
-  /// Returns the [eventId] (UUID) from Supabase.
   Future<String> createEvent() async {
-    final uid = _userId;
-    if (uid == null) throw StateError('No authenticated user');
+    // Use getUser() — async round-trip to Supabase Auth — to guarantee
+    // we have a valid, non-stale session. currentUser can be null for a
+    // brief window after hot-restart even when a session exists on disk.
+    final userResponse = await _db.auth.getUser();
+    final uid = userResponse.user?.id;
 
-    // Get initial position (best-effort; may be null if GPS unavailable).
+    if (uid == null || uid.isEmpty) {
+      debugPrint('❌ [SOS] Create failed: No authenticated user found.');
+      throw StateError('Not signed in. Please log in and try again.');
+    }
+
+    debugPrint('✅ [SOS] Authenticated uid: $uid');
+
+    await LocationService.instance.init();
+    LocationService.instance.startTracking();
+
     Position? pos;
     try {
       pos = await LocationService.instance.current
-          .timeout(const Duration(seconds: 6));
+          .timeout(const Duration(seconds: 4));
     } catch (_) {
       pos = LocationService.instance.lastPosition;
     }
 
     final isOnline = ConnectivityService.instance.isOnline;
+    debugPrint('[SOS] Attempting Supabase insert. Online: $isOnline');
 
-    final row = await _db
-        .from('sos_events')
-        .insert({
-          'user_id':       uid,
-          'status':        'active',
-          'transmission':  isOnline ? 'online' : 'sms',
-          'initial_lat':   pos?.latitude,
-          'initial_lng':   pos?.longitude,
-        })
-        .select('id, ref_id')
-        .single();
+    try {
+      final row = await _db
+          .from('sos_events')
+          .insert({
+            'user_id':      uid,
+            'status':       'active',
+            'transmission': isOnline ? 'online' : 'sms',
+            'initial_lat':  pos?.latitude,
+            'initial_lng':  pos?.longitude,
+          })
+          .select('id, ref_id')
+          .single();
 
-    _activeEventId = row['id'] as String;
-    _activeRefId   = row['ref_id'] as String? ?? _activeEventId;
-    _seq = 0;
+      _activeEventId = row['id'] as String;
+      _activeRefId   = row['ref_id'] as String? ?? _activeEventId;
+      _seq = 0;
+      _lastPingTime = null;
 
-    // Insert the first ping immediately if we have a position.
-    if (pos != null) await _insertPing(pos);
+      debugPrint('✅ [SOS] Event created: $_activeEventId (ref: $_activeRefId)');
 
-    // Start periodic pings.
-    _startPingTimer();
+      if (pos != null) await _insertPing(pos);
+      _startLocationStreaming();
 
-    return _activeEventId!;
+      return _activeEventId!;
+    } catch (e) {
+      debugPrint('❌ [SOS] INSERT FAILED: $e');
+      rethrow;
+    }
   }
 
-  // ── Resolve event ──────────────────────────────────────────────────────────
-  /// Marks the event as resolved and stops GPS tracking.
   Future<void> resolveEvent({String? note}) async {
     final eventId = _activeEventId;
     if (eventId == null) return;
 
-    _stopPingTimer();
+    _stopLocationStreaming();
+    LocationService.instance.stopTracking();
 
-    await _db.from('sos_events').update({
-      'status':          'resolved',
-      'resolved_at':     DateTime.now().toIso8601String(),
-      'resolution_note': note,
-    }).eq('id', eventId);
+    try {
+      await _db.from('sos_events').update({
+        'status':          'resolved',
+        'resolved_at':     DateTime.now().toIso8601String(),
+        'resolution_note': note,
+      }).eq('id', eventId);
+      debugPrint('✅ [SOS] Event resolved on server.');
+    } catch (e) {
+      debugPrint('❌ [SOS] Failed to resolve event: $e');
+    }
 
     _activeEventId = null;
     _activeRefId   = null;
     _seq = 0;
   }
 
-  // ── Insert a single ping ───────────────────────────────────────────────────
   Future<void> _insertPing(Position pos) async {
     final eventId = _activeEventId;
-    final uid     = _userId;
-    if (eventId == null || uid == null) return;
+    // Read from the cached auth user — if null skip the ping silently.
+    final uid = _db.auth.currentUser?.id;
+    if (eventId == null || uid == null || uid.isEmpty) return;
 
-    _seq++;
-    await _db.from('location_pings').insert({
-      'event_id': eventId,
-      'user_id':  uid,
-      'lat':      pos.latitude,
-      'lng':      pos.longitude,
-      'accuracy': pos.accuracy,
-      'altitude': pos.altitude,
-      'speed':    pos.speed,
-      'heading':  pos.heading,
-      'source':   'gps',
-      'seq':      _seq,
-    });
+    try {
+      _seq++;
+      await _db.from('location_pings').insert({
+        'event_id': eventId,
+        'user_id':  uid,
+        'lat':      pos.latitude,
+        'lng':      pos.longitude,
+        'accuracy': pos.accuracy,
+        'altitude': pos.altitude,
+        'speed':    pos.speed,
+        'heading':  pos.heading,
+        'source':   'gps',
+        'seq':      _seq,
+      });
+      _lastPingTime = DateTime.now();
+      debugPrint('📍 [SOS] Ping #$_seq uploaded.');
+    } catch (e) {
+      debugPrint('⚠️ [SOS] Ping upload failed: $e');
+    }
   }
 
-  // ── Periodic ping timer ────────────────────────────────────────────────────
-  void _startPingTimer() {
-    _pingTimer?.cancel();
-    _pingTimer = Timer.periodic(pingInterval, (_) async {
-      Position? pos;
-      try {
-        pos = await LocationService.instance.current
-            .timeout(const Duration(seconds: 5));
-      } catch (_) {
-        pos = LocationService.instance.lastPosition;
+  void _startLocationStreaming() {
+    _locationSub?.cancel();
+    _locationSub = LocationService.instance.stream.listen((pos) async {
+      final now = DateTime.now();
+      if (_lastPingTime == null || now.difference(_lastPingTime!) >= const Duration(seconds: 5)) {
+        await _insertPing(pos);
       }
-      if (pos != null) await _insertPing(pos);
-    });
+    }, onError: (err) => debugPrint('Error in location stream: $err'));
   }
 
-  void _stopPingTimer() {
-    _pingTimer?.cancel();
-    _pingTimer = null;
+  void _stopLocationStreaming() {
     _locationSub?.cancel();
     _locationSub = null;
   }

@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../constants.dart';
+import '../services/supabase_service.dart';
 
-/// A simulated location ping on the victim's trail.
+/// Live location ping pulled directly from the Supabase location_pings table.
 class _LocationPing {
   _LocationPing({
     required this.lat,
@@ -17,8 +19,8 @@ class _LocationPing {
   final DateTime timestamp;
 }
 
-/// Admin screen: shows the victim's location trail, event metadata,
-/// and a timeline of pings. Wires to Supabase Realtime in production.
+/// Admin screen: shows the victim's genuine real-time location trail, 
+/// event metadata, and a timeline of pings using a Supabase Realtime stream.
 class VictimDetailScreen extends StatefulWidget {
   const VictimDetailScreen({
     super.key,
@@ -35,10 +37,9 @@ class VictimDetailScreen extends StatefulWidget {
 
 class _VictimDetailScreenState extends State<VictimDetailScreen>
     with SingleTickerProviderStateMixin {
-  final List<_LocationPing> _pings = [];
-  Timer? _pingTimer;
+  late final Stream<List<Map<String, dynamic>>> _pingsStream;
 
-  // Path animation.
+  // Path pulsing pulse value controller
   late AnimationController _pathController;
 
   @override
@@ -50,70 +51,78 @@ class _VictimDetailScreenState extends State<VictimDetailScreen>
       duration: const Duration(milliseconds: 1200),
     )..repeat();
 
-    // Seed with a few historical pings.
-    final rng = math.Random();
-    double lat = 40.7128;
-    double lng = -74.0060;
-    final now = DateTime.now();
-    for (int i = 5; i >= 0; i--) {
-      lat += (rng.nextDouble() - 0.5) * 0.0003;
-      lng += (rng.nextDouble() - 0.5) * 0.0003;
-      _pings.add(_LocationPing(
-        lat: lat,
-        lng: lng,
-        timestamp: now.subtract(Duration(minutes: i * 5)),
-      ));
-    }
-
-    // Simulate a new ping every 5 seconds.
-    _pingTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-      if (!mounted) return;
-      final last = _pings.last;
-      final rng2 = math.Random();
-      _pings.add(_LocationPing(
-        lat: last.lat + (rng2.nextDouble() - 0.5) * 0.0002,
-        lng: last.lng + (rng2.nextDouble() - 0.5) * 0.0002,
-        timestamp: DateTime.now(),
-      ));
-      setState(() {});
-    });
+    // Set up a real-time stream subscription on location_pings table for this specific event
+    _pingsStream = SupabaseService.instance.client
+        .from('location_pings')
+        .stream(primaryKey: ['id'])
+        .eq('event_id', widget.eventId)
+        .order('seq', ascending: true);
   }
 
   @override
   void dispose() {
     _pathController.dispose();
-    _pingTimer?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
-    final lastPing = _pings.isNotEmpty ? _pings.last : null;
 
-    return Scaffold(
-      backgroundColor: kColorBackground,
-      body: CustomScrollView(
-        slivers: [
-          _buildAppBar(context, textTheme),
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _buildLiveMap(textTheme),
-                  const SizedBox(height: 16),
-                  _buildStatusCard(textTheme, lastPing),
-                  const SizedBox(height: 16),
-                  _buildPingTimeline(textTheme),
-                  const SizedBox(height: 32),
-                ],
+    return StreamBuilder<List<Map<String, dynamic>>>(
+      stream: _pingsStream,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Scaffold(
+            backgroundColor: kColorBackground,
+            appBar: AppBar(backgroundColor: kColorSOS, title: const Text('Error Loading')),
+            body: Center(child: Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: Text('Error stream sync: ${snapshot.error}'),
+            )),
+          );
+        }
+
+        final rawPings = snapshot.data ?? [];
+        final List<_LocationPing> pings = rawPings.map((p) {
+          final latVal = (p['lat'] as num?)?.toDouble() ?? 0.0;
+          final lngVal = (p['lng'] as num?)?.toDouble() ?? 0.0;
+          DateTime time;
+          try {
+            time = DateTime.parse(p['created_at'] as String);
+          } catch (_) {
+            time = DateTime.now();
+          }
+          return _LocationPing(lat: latVal, lng: lngVal, timestamp: time);
+        }).toList();
+
+        final lastPing = pings.isNotEmpty ? pings.last : null;
+
+        return Scaffold(
+          backgroundColor: kColorBackground,
+          body: CustomScrollView(
+            slivers: [
+              _buildAppBar(context, textTheme),
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _buildLiveMap(textTheme, pings),
+                      const SizedBox(height: 16),
+                      _buildStatusCard(textTheme, lastPing, pings.length),
+                      const SizedBox(height: 16),
+                      _buildPingTimeline(textTheme, pings),
+                      const SizedBox(height: 32),
+                    ],
+                  ),
+                ),
               ),
-            ),
+            ],
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -168,8 +177,8 @@ class _VictimDetailScreenState extends State<VictimDetailScreen>
     );
   }
 
-  // ── Simulated live map ─────────────────────────────────────────────────────
-  Widget _buildLiveMap(TextTheme textTheme) {
+  // ── Live map ───────────────────────────────────────────────────────────────
+  Widget _buildLiveMap(TextTheme textTheme, List<_LocationPing> pings) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
       child: Container(
@@ -183,16 +192,24 @@ class _VictimDetailScreenState extends State<VictimDetailScreen>
               painter: _GridPainter(),
             ),
             // Movement path.
-            AnimatedBuilder(
-              animation: _pathController,
-              builder: (_, __) => CustomPaint(
-                size: const Size(double.infinity, 260),
-                painter: _PathPainter(
-                  pings: _pings,
-                  pulseValue: _pathController.value,
+            if (pings.isNotEmpty)
+              AnimatedBuilder(
+                animation: _pathController,
+                builder: (_, __) => CustomPaint(
+                  size: const Size(double.infinity, 260),
+                  painter: _PathPainter(
+                    pings: pings,
+                    pulseValue: _pathController.value,
+                  ),
+                ),
+              )
+            else
+              const Center(
+                child: Text(
+                  'No geographic coordinates broad-casted yet.',
+                  style: TextStyle(color: kColorTextSecondary, fontWeight: FontWeight.w500),
                 ),
               ),
-            ),
             // Map label.
             Positioned(
               top: 12,
@@ -201,7 +218,7 @@ class _VictimDetailScreenState extends State<VictimDetailScreen>
                 padding:
                     const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.9),
+                  color: Colors.white.withOpacity(0.9),
                   borderRadius: BorderRadius.circular(6),
                   border: Border.all(color: kColorBorder),
                 ),
@@ -226,11 +243,11 @@ class _VictimDetailScreenState extends State<VictimDetailScreen>
                 padding:
                     const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
-                  color: kColorSOS.withValues(alpha: 0.9),
+                  color: kColorSOS.withOpacity(0.9),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Text(
-                  '${_pings.length} pings',
+                  '${pings.length} pings',
                   style: const TextStyle(
                     color: Colors.white,
                     fontSize: 11,
@@ -246,7 +263,7 @@ class _VictimDetailScreenState extends State<VictimDetailScreen>
   }
 
   // ── Status card ────────────────────────────────────────────────────────────
-  Widget _buildStatusCard(TextTheme textTheme, _LocationPing? lastPing) {
+  Widget _buildStatusCard(TextTheme textTheme, _LocationPing? lastPing, int totalPings) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -273,11 +290,16 @@ class _VictimDetailScreenState extends State<VictimDetailScreen>
                 label: 'Longitude',
                 value: lastPing.lng.toStringAsFixed(6)),
             _DetailRow(
-                label: 'Last Ping',
+                label: 'Last Ping Recv',
                 value: _formatTime(lastPing.timestamp)),
             _DetailRow(
-                label: 'Total Pings',
-                value: '${_pings.length}'),
+                label: 'Total Real Pings',
+                value: '$totalPings'),
+          ] else ...[
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8.0),
+              child: Text('Waiting for incoming GPS streaming broadcast payload...', style: TextStyle(color: kColorTextSecondary, fontSize: 13)),
+            )
           ],
         ],
       ),
@@ -285,8 +307,8 @@ class _VictimDetailScreenState extends State<VictimDetailScreen>
   }
 
   // ── Ping timeline ──────────────────────────────────────────────────────────
-  Widget _buildPingTimeline(TextTheme textTheme) {
-    final reversed = _pings.reversed.take(10).toList();
+  Widget _buildPingTimeline(TextTheme textTheme, List<_LocationPing> pings) {
+    final reversed = pings.reversed.take(10).toList();
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -302,11 +324,16 @@ class _VictimDetailScreenState extends State<VictimDetailScreen>
             children: [
               const Icon(Icons.timeline, color: kColorInfo, size: 20),
               const SizedBox(width: 8),
-              Text('Location Timeline',
+              Text('Location Timeline (Latest 10)',
                   style: textTheme.titleLarge?.copyWith(fontSize: 16)),
             ],
           ),
           const SizedBox(height: 12),
+          if (pings.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8.0),
+              child: Text('Timeline empty.', style: TextStyle(color: kColorTextSecondary)),
+            ),
           ...reversed.asMap().entries.map((entry) {
             final i = entry.key;
             final ping = entry.value;
@@ -316,14 +343,14 @@ class _VictimDetailScreenState extends State<VictimDetailScreen>
               ping: ping,
               isFirst: isFirst,
               isLast: isLast,
-              index: _pings.length - i,
+              index: pings.length - i,
             );
           }),
-          if (_pings.length > 10)
+          if (pings.length > 10)
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(
-                '+ ${_pings.length - 10} earlier pings…',
+                '+ ${pings.length - 10} earlier pings stored in Supabase…',
                 style: textTheme.labelSmall?.copyWith(color: kColorTextSecondary),
               ),
             ),
@@ -369,22 +396,24 @@ class _PathPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     if (pings.isEmpty) return;
 
-    // Map lat/lng to canvas coordinates (simple linear mapping for demo).
+    // Map lat/lng to canvas coordinates
     final latMin = pings.map((p) => p.lat).reduce(math.min) - 0.0005;
     final latMax = pings.map((p) => p.lat).reduce(math.max) + 0.0005;
     final lngMin = pings.map((p) => p.lng).reduce(math.min) - 0.0005;
     final lngMax = pings.map((p) => p.lng).reduce(math.max) + 0.0005;
 
+    final double latDiff = (latMax - latMin) == 0 ? 0.001 : (latMax - latMin);
+    final double lngDiff = (lngMax - lngMin) == 0 ? 0.001 : (lngMax - lngMin);
+
     Offset toCanvas(double lat, double lng) {
-      final x = (lng - lngMin) / (lngMax - lngMin) * size.width;
-      // Latitude increases upward, canvas y increases downward.
-      final y = (1 - (lat - latMin) / (latMax - latMin)) * size.height;
+      final x = (lng - lngMin) / lngDiff * size.width;
+      final y = (1 - (lat - latMin) / latDiff) * size.height;
       return Offset(x, y);
     }
 
     // Draw path.
     final pathPaint = Paint()
-      ..color = kColorSOS.withValues(alpha: 0.5)
+      ..color = kColorSOS.withOpacity(0.5)
       ..strokeWidth = 2
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
@@ -415,7 +444,7 @@ class _PathPainter extends CustomPainter {
         last,
         t * 20,
         Paint()
-          ..color = kColorSOS.withValues(alpha: (1 - t) * 0.5)
+          ..color = kColorSOS.withOpacity((1 - t) * 0.5)
           ..style = PaintingStyle.stroke
           ..strokeWidth = 2,
       );
