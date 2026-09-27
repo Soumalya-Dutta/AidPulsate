@@ -129,10 +129,14 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               IconButton(
                 tooltip: 'Admin Dashboard',
-                icon: const Icon(Icons.admin_panel_settings_outlined),
-                color: kColorTextSecondary,
-                onPressed: () =>
-                    Navigator.pushNamed(context, AppRoutes.adminDashboard),
+                icon: Icon(
+                  Icons.admin_panel_settings_outlined,
+                  color: SupabaseService.instance.isAdmin ? kColorSOS : kColorTextSecondary,
+                ),
+                onPressed: () {
+                  SupabaseService.instance.fetchIsAdmin();
+                  Navigator.pushNamed(context, AppRoutes.adminDashboard);
+                },
               ),
               IconButton(
                 tooltip: 'Settings',

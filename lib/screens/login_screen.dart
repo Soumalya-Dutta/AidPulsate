@@ -43,24 +43,38 @@ class _LoginScreenState extends State<LoginScreen> {
         password: _passwordCtrl.text,
       );
       if (!mounted) return;
+      final destination = SupabaseService.instance.isAdmin
+          ? AppRoutes.adminDashboard
+          : AppRoutes.home;
+
       Navigator.pushNamedAndRemoveUntil(
         context,
-        AppRoutes.home,
+        destination,
         (_) => false,
       );
     } on AuthException catch (e) {
       if (!mounted) return;
       setState(() {
-        _isLoading = false;
         _errorMessage = e.message;
       });
-    } catch (_) {
+    } catch (e) {
       if (!mounted) return;
       setState(() {
-        _isLoading = false;
-        _errorMessage = 'An unexpected error occurred. Please try again.';
+        _errorMessage = e.toString().replaceFirst('Exception: ', '');
       });
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
+  }
+
+  void _fillDemo(String email) {
+    setState(() {
+      _emailCtrl.text = email;
+      _passwordCtrl.text = 'Demo@1234';
+      _errorMessage = null;
+    });
   }
 
   void _onForgotPassword() {
@@ -195,6 +209,30 @@ class _LoginScreenState extends State<LoginScreen> {
               if (v.length < 6) return 'Password must be at least 6 characters';
               return null;
             },
+          ),
+          const SizedBox(height: 12),
+          // Quick Demo Credentials
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                'Demo Accounts: ',
+                style: textTheme.labelSmall?.copyWith(color: kColorTextSecondary),
+              ),
+              ActionChip(
+                label: const Text('Admin'),
+                avatar: const Icon(Icons.admin_panel_settings, size: 14),
+                onPressed: () => _fillDemo('admin@aidpulsate.com'),
+                visualDensity: VisualDensity.compact,
+              ),
+              const SizedBox(width: 8),
+              ActionChip(
+                label: const Text('Victim'),
+                avatar: const Icon(Icons.person, size: 14),
+                onPressed: () => _fillDemo('maria@example.com'),
+                visualDensity: VisualDensity.compact,
+              ),
+            ],
           ),
         ],
       ),

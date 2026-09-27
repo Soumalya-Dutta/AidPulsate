@@ -63,9 +63,15 @@ class _SignupScreenState extends State<SignupScreen> {
         return;
       }
 
+      await SupabaseService.instance.fetchIsAdmin();
+      if (!mounted) return;
+      final destination = (SupabaseService.instance.isAdmin || _selectedRole == 'admin')
+          ? AppRoutes.adminDashboard
+          : AppRoutes.home;
+
       Navigator.pushNamedAndRemoveUntil(
         context,
-        AppRoutes.home,
+        destination,
         (_) => false,
       );
     } on AuthException catch (e) {

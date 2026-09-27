@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'core/router/app_router.dart';
+
 // ── Colour palette ─────────────────────────────────────────────────────────
 const kColorSOS = Color(0xFFD32F2F);
 const kColorSafe = Color(0xFF2E7D32);
@@ -57,14 +59,17 @@ ThemeData buildAppTheme() {
 }
 
 // ── Named routes ────────────────────────────────────────────────────────────
+// Thin wrapper that delegates to AppRouter so all existing screens that
+// import constants.dart continue to compile with zero changes.
+// New code should use AppRouter directly.
 class AppRoutes {
-  static const login = '/login';
-  static const signup = '/signup';
-  static const home = '/';
-  static const countdown = '/countdown';
-  static const activeSOS = '/sos/active';
-  static const offlineSOS = '/sos/offline';
-  static const resolution = '/resolution';
-  static const adminDashboard = '/admin';
-  static const adminVictimDetail = '/admin/victim';
+  static const login             = AppRouter.login;
+  static const signup            = AppRouter.signup;
+  static const home              = AppRouter.home;
+  static const countdown         = AppRouter.countdown;
+  static const activeSOS         = AppRouter.activeSOS;
+  static const offlineSOS        = AppRouter.offlineSOS;
+  static const resolution        = AppRouter.resolution;
+  static const adminDashboard    = AppRouter.adminDashboard;
+  static const adminVictimDetail = AppRouter.adminVictimDetail;
 }

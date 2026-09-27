@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../constants.dart';
+import '../services/supabase_service.dart';
 
 /// Simulated SOS event model – replace with Supabase realtime data.
 class _SOSEvent {
@@ -168,14 +169,17 @@ class _AdminDashboardState extends State<AdminDashboard> {
   }
 
   SliverAppBar _buildAppBar(BuildContext context, TextTheme textTheme) {
+    final canPop = Navigator.canPop(context);
     return SliverAppBar(
       backgroundColor: kColorBackground,
       elevation: 0,
       pinned: true,
-      leading: IconButton(
-        icon: const Icon(Icons.arrow_back),
-        onPressed: () => Navigator.pop(context),
-      ),
+      leading: canPop
+          ? IconButton(
+              icon: const Icon(Icons.arrow_back),
+              onPressed: () => Navigator.pop(context),
+            )
+          : null,
       title: Row(
         children: [
           Container(
@@ -193,11 +197,59 @@ class _AdminDashboardState extends State<AdminDashboard> {
           ),
         ],
       ),
+      actions: [
+        IconButton(
+          tooltip: 'Victim / SOS Mode',
+          icon: const Icon(Icons.sos_outlined),
+          color: kColorSOS,
+          onPressed: () => Navigator.pushNamed(context, AppRoutes.home),
+        ),
+        IconButton(
+          tooltip: 'Sign Out',
+          icon: const Icon(Icons.logout),
+          color: kColorTextSecondary,
+          onPressed: () => _onSignOut(context),
+        ),
+      ],
       bottom: PreferredSize(
         preferredSize: const Size.fromHeight(1),
         child: Divider(height: 1, color: kColorBorder),
       ),
     );
+  }
+
+  Future<void> _onSignOut(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Sign Out'),
+        content: const Text('Are you sure you want to sign out?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: kColorSOS,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Sign Out'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && context.mounted) {
+      await SupabaseService.instance.signOut();
+      if (context.mounted) {
+        Navigator.pushNamedAndRemoveUntil(
+          context,
+          AppRoutes.login,
+          (_) => false,
+        );
+      }
+    }
   }
 
   SliverToBoxAdapter _buildStatsRow(int active, int resolved) {
